@@ -18,11 +18,11 @@
 
 import random
 
-import comp.util as util
-import comp.distanceCalculator as distanceCalculator
-from comp.game import Agent
-from comp.captureGraphicsDisplay import PacmanGraphics
-from comp.util import nearestPoint
+import util as util
+import distanceCalculator as distanceCalculator
+from game import Agent
+from captureGraphicsDisplay import PacmanGraphics
+from util import nearestPoint
 
 
 # Note: the following class is not used, but is kept for backwards

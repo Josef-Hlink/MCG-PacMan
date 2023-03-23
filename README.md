@@ -17,8 +17,6 @@ python3 -m venv venv; source venv/bin/activate
 # requirements
 pip install -r requirements.txt
 cd src
-# source code for competition
-git clone git@github.com:cshelton/pacman-ctf.git; mv pacman-ctf comp
 # run
 python3 main.py
 ```
