@@ -12,7 +12,7 @@ Implementation by: _J. Hamelink, T. Blom, S. Sharma_
 
 ```bash
 git clone <this-repo>
-# recommended: create a virtual environment
+# recommended (if it works): create a virtual environment
 python3 -m venv venv; source venv/bin/activate
 # requirements
 pip install -r requirements.txt
