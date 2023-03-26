@@ -13,6 +13,7 @@
 
 
 import random, time, util
+from datetime import datetime
 
 import numpy as np
 
@@ -94,30 +95,69 @@ class DummyAgent(CaptureAgent):
 
 
 class GangsterAgent(CaptureAgent):
+    
+    def registerInitialState(self, gameState: GameState) -> None:
+        CaptureAgent.registerInitialState(self, gameState)
 
-    def __init__(self, index):
-        super().__init__(self, index)
+        self.startNode: TreeNode = TreeNode(gameState, 'Stop', self, None)
+        
+
 
     def chooseAction(self, gameState: GameState) -> str:
         """
         Picks among actions randomly.
         """
 
-        return self.monteCarloTreeSearch(gameState)
+        actions = gameState.getLegalActions(self.index)
+        if len(actions) == 1:
+            return actions[0]
 
 
-    def monteCarloTreeSearch(self, gameState: GameState) -> str:
+        if gameState.getAgentPosition(self.index)[0] == 30:
+            if gameState.getAgentPosition(self.index)[1] == 1:
+                return 'West'
+            return 'South'
+
+        # action = self.basicMonteCarlo(gameState, 25)
+        action = self.MCTS(gameState, 25)
+
+        # food left and food you are defending
+        foodLeft = self.getFood(gameState).count(True)
+        oppFoodLeft = self.getFoodYouAreDefending(gameState).count(True)
+        pos = gameState.getAgentPosition(self.index)
+        print(f'{str(datetime.now())[:-4]}: Agent {self.index} is on position {pos} and will go {action} | current score: {foodLeft} - {oppFoodLeft}')
+
+
+        return action
+
+    def MCTS(self, gameState: GameState, n: int) -> str:
         """
-        Performs a Monte Carlo Tree Search on the given state and returns the best action.
+        Performs a Monte Carlo tree search on the given state and returns the best action.
+        """
+        
+        self.startNode.expand()
+        for _ in range(n):
+            node = self.startNode.select()
+            node.expand()
+            node = node.select()
+            node.backpropagate(node.rollout(100))
+        
+
+    def basicMonteCarlo(self, gameState: GameState, n: int) -> str:
+        """
+        Performs a basic Monte Carlo random search on the given state and returns the best action.
         """
         
         actions = gameState.getLegalActions(self.index)
+        actions.remove('Stop')
         Q: np.ndarray = np.zeros(len(actions))
         for i, action in enumerate(actions):
-            Q[i] += self.monteCarloPlayOut(gameState, action)
-        return actions[np.argmax(Q)]
+            for _ in range(n):
+                Q[i] += self.randomPlayout(gameState, action)
+        print(Q)
+        return actions[argmax(Q)]
 
-    def monteCarloPlayOut(self, gameState: GameState, action: str, maxDepth: int = 50) -> bool:
+    def randomPlayout(self, gameState: GameState, action: str, maxDepth: int = 400) -> bool:
         """
         Plays out a random game from the given state and returns True if the agent's team won.
         """
@@ -139,6 +179,81 @@ class GangsterAgent(CaptureAgent):
         if oppFoodLeft < foodLeft:
             return False
         elif oppFoodLeft == foodLeft:
-            return True
+            return False
         else:
             return True
+
+class TreeNode:
+    def __init__(self, gameState: GameState, player: CaptureAgent, parent: 'TreeNode' = None) -> None:
+        self.gameState = gameState
+        self.player = player
+        self.parent = parent
+        self.children: dict[str, TreeNode] = {}
+        self.visits = 0
+        self.Q = 0
+
+    def expand(self) -> None:
+        actions = self.gameState.getLegalActions(self.player.index)
+        actions.remove('Stop')
+        for action in actions:
+            self.children[action] = TreeNode(self.gameState.generateSuccessor(self.player.index, action), action, self)
+
+    def isFullyExpanded(self) -> bool:
+        return len(self.children) == len(self.gameState.getLegalActions(self.player.index))
+
+    @property
+    def bestChild(self) -> 'TreeNode':
+        return max(self.children, key=lambda node: node.Q / node.visits + np.sqrt(2 * np.log(self.visits) / node.visits))
+
+    def select(self) -> 'TreeNode':
+        if self.isFullyExpanded():
+            return self.bestChild.select()
+        else:
+            return self
+
+    def rollout(self, maxDepth: int) -> bool:
+        simulation = self.gameState.deepCopy()
+        d = 0
+        while d < maxDepth:
+            foodLeft = self.player.getFood(simulation).count(True)
+            if not foodLeft:
+                return True
+            actions = simulation.getLegalActions(self.player.index)
+            action = random.choice(actions)
+            simulation = simulation.generateSuccessor(self.player.index, action)
+            if simulation.isOver():
+                break
+            d += 1
+        
+        oppFoodLeft = self.player.getFoodYouAreDefending(simulation).count(True)
+        if oppFoodLeft < foodLeft:
+            return False
+        elif oppFoodLeft == foodLeft:
+            return False
+        else:
+            return True
+
+    def backpropagate(self, reward: bool) -> None:
+        self.visits += 1
+        self.Q += reward
+        if self.parent is not None:
+            self.parent.backpropagate(reward)
+
+    def __repr__(self) -> str:
+        return f'TreeNode({self.gameState}, {self.action}, {self.parent})'
+
+    def __hash__(self) -> int:
+        return hash(self.gameState)
+    
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TreeNode):
+            return NotImplemented
+        return self.gameState == other.gameState
+
+
+
+
+def argmax(x: np.ndarray) -> int:
+    """ Argmax with random tie-breaking. """
+    return random.choice(np.nonzero(x == np.amax(x))[0])
+

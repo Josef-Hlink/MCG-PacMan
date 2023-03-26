@@ -615,6 +615,7 @@ class Game:
         numAgents = len( self.agents )
 
         while not self.gameOver:
+            # time.sleep(0.1)
             # Fetch the next agent
             agent = self.agents[agentIndex]
             move_time = 0
