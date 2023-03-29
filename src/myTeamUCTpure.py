@@ -142,7 +142,7 @@ class UCTAgent(CaptureAgent):
         bAct, bVal = None, -math.inf
         for child in root.c:
             h = self.heuristicValue(child.s)
-            print(f'> {child.a} - UCT:{child.v / child.n:.3f} .... H: {h:.3f}')
+            print(f'> {child.a} - UCT: {child.v / child.n:.3f} ... H: {h:.3f}')
             val = child.v / child.n + h
             # val = child.v / child.n
             if val > bVal:
