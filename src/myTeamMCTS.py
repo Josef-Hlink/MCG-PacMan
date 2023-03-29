@@ -25,9 +25,7 @@ from game import Directions, Actions
 #################
 
 def createTeam(
-    firstIndex,
-    secondIndex,
-    isRed,
+    firstIndex, secondIndex, isRed,
     first = 'MCTSAgent',
     second = 'UCTAgent'
 ) -> list[CaptureAgent]:
@@ -49,11 +47,10 @@ def createTeam(
     # The following line is an example only; feel free to change it.
     return [eval(first)(firstIndex), eval(second)(secondIndex)]
 
-##########
-# Agents #
-##########
+########
+# Node #
+########
 
-# Minimalistic node class for the game tree.
 class Node:
     def __init__(self, state: GameState, parent: 'Node' = None, action: str = None):
         self.s: GameState = state  # GameState object (very fucking bloated)
@@ -63,6 +60,9 @@ class Node:
         self.n: int = 0            # number of simulations after this node
         self.v: float = 0          # "quality" of this node
 
+##########
+# Agents #
+##########
 
 class MCTSAgent(CaptureAgent):
     """
@@ -77,8 +77,9 @@ class MCTSAgent(CaptureAgent):
         self.valueOfFinalNode: function = self.valueOfNodePure
 
     def chooseAction(self, gameState: GameState) -> str:
-        root = Node(gameState)
+        
         startTime = time.perf_counter()
+        root = Node(gameState)
         i = 0
 
         while time.perf_counter() - startTime < self.timeLimit:
@@ -118,6 +119,8 @@ class MCTSAgent(CaptureAgent):
 
         if self.index == 0: print(f'\nt = {int(300 - gameState.data.timeleft/4)}')
         self.logAction(bAct)
+        endTime = time.perf_counter()
+        print(f'i = {i}, runtime = {endTime - startTime:.3f}s')
 
         return bAct
 
@@ -159,7 +162,8 @@ class UCTAgent(MCTSAgent):
         MCTSAgent.registerInitialState(self, gameState)
         self.valueOfNode: function = self.valueOfNodeUCT
         self.valueOfFinalNode: function = self.valueOfNodePure
+        self.c: float = math.sqrt(2)
 
     def valueOfNodeUCT(self, node: Node) -> float:
         if node.n == 0: return math.inf
-        return node.v / node.n + math.sqrt(2 * math.log(node.p.n) / node.n)
+        return node.v / node.n + self.c * math.sqrt(math.log(node.p.n) / node.n)
