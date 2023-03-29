@@ -138,7 +138,7 @@ class MCTSAgent(CaptureAgent):
         if self.index == 0: print(f'\nt = {int(300 - gameState.data.timeleft/4)}')
         self.logAction(bAct)
         endTime = time.perf_counter()
-        print(f'i = {i}, runtime = {endTime - startTime:.3f}s')
+        print(f'i = {i}, runtime = {endTime - startTime:.3f}s, value = {bVal:.3f}')
 
         return bAct
 
@@ -220,6 +220,7 @@ class MasterAgent(UCTAgent):
     def registerInitialState(self, gameState):
         UCTAgent.registerInitialState(self, gameState)
         self.valueOfFinalNode: function = self.valueOfNodeMaster
+        self.timeLimit = .9
         # ---- Info on environment ---- #
         self.homePos: tuple[int, int] = gameState.getAgentPosition(self.index)
         self.territory = self.getHomePositions(gameState)
@@ -243,6 +244,7 @@ class MasterAgent(UCTAgent):
         self.enemyPositions = [gameState.getAgentPosition(i) for i in self.getOpponents(gameState)]
 
         # ---- Update flags ---- #
+        self.isRunning, self.isChasing = False, False
         self.isInHomeStrip = self.ourPos in self.homeStrip
         self.isInSafeStrip = self.ourPos in self.safeStrip
         
@@ -250,19 +252,57 @@ class MasterAgent(UCTAgent):
 
         closestEnemyPos = min(self.enemyPositions, key=lambda pos: self.distances[self.ourPos][pos])
         closestSafePos = min(self.safeStrip, key=lambda pos: self.distances[self.ourPos][pos])
-        if self.nCarrying > 0 and self.distances[self.ourPos][closestEnemyPos] < min(3, self.distances[self.ourPos][closestSafePos]):
+
+        if self.nCarrying > 2:
             self.isRunning = True
             self.chasing = False
-
-        for enemy in self.enemyPositions:
-            if enemy in self.territory:
-                if self.ourPos in self.territory:
-                    self.isChasing = True
-                    self.isRunning = False
+        elif self.nCarrying > 0 and self.distances[self.ourPos][closestEnemyPos] < min(3, self.distances[self.ourPos][closestSafePos]):
+        # elif self.distances[self.ourPos][closestEnemyPos] < min(5, self.distances[self.ourPos][closestSafePos]):
+            self.isRunning = True
+            self.chasing = False
+        else:
+            for enemy in self.enemyPositions:
+                if enemy in self.territory:
+                    # if we are closer to the enemy than our teammate is, we should chase
+                    if self.distances[self.ourPos][enemy] <= self.distances[self.teamMatePos][enemy] and min(self.getTeam(gameState)) == self.index:
+                        self.isChasing = True
+                        self.isRunning = False
 
         # ---- Choose action ---- #
         action = UCTAgent.chooseAction(self, gameState)
         return action
+
+    def valueOfNodeMaster(self, node: Node) -> float:
+        closestDistToSafeStrip = self.closestDistToSafeStrip(node.s)
+        closestDistToFood = self.closestDistToFood(node.s)
+        
+        finalValue = self.valueOfNodeUCT(node)
+
+        if self.isInHomeStrip:
+            # just always minimize distance to middle of the field
+            finalValue += 100 / closestDistToSafeStrip
+            return finalValue
+
+        if self.isChasing:
+            # minimize the distance to attacking pacman
+            finalValue += 10 / min(self.distToEnemies(node.p.s))
+            return finalValue
+        
+        if self.isRunning:
+            # maximize the distance to defending ghost
+            finalValue += 10 * min(self.distToEnemies(node.p.s))
+            # while also minimizing the distance to the safe zone so it deposits food
+            finalValue += 5 / (closestDistToSafeStrip + 0.001)
+            return finalValue
+        
+        # incentivize eating food
+        if node.s.getAgentPosition(self.index) in self.foodPositions:
+            finalValue += 2
+        # incentivize to move closer to food
+        else:
+            finalValue += 1 / closestDistToFood
+
+        return finalValue
 
     def getTeamMatePos(self, gameState: GameState) -> tuple[int, int]:
         """ Returns the position of the agent's team mate. """
@@ -280,29 +320,3 @@ class MasterAgent(UCTAgent):
     def distToEnemies(self, gameState: GameState) -> list[tuple[int, int]]:
         """ Returns the distance to the enemies. """
         return [self.distances[gameState.getAgentPosition(self.index)][gameState.getAgentPosition(i)] for i in self.getOpponents(gameState)]
-
-    def valueOfNodeMaster(self, node: Node) -> float:
-        closestDistToSafeStrip = self.closestDistToSafeStrip(node.s)
-        closestDistToFood = self.closestDistToFood(node.s)
-        
-        finalValue = self.valueOfNodeUCT(node)
-
-        if self.isInHomeStrip:
-            finalValue += 20 / closestDistToSafeStrip
-            return finalValue
-
-        if self.isChasing:
-            finalValue += 5 / min(self.distToEnemies(node.p.s))
-            return finalValue
-        
-        # incentivize eat food
-        if node.s.getAgentPosition(self.index) in self.foodPositions:
-            finalValue += 10
-        # incentivize to move to food
-        else:
-            finalValue += 2 / closestDistToFood
-
-        if self.isRunning:
-            finalValue += 10 * min(self.distToEnemies(node.p.s))
-        
-        return finalValue
