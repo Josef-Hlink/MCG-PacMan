@@ -233,8 +233,6 @@ class MasterAgent(UCTAgent):
         self.isRunning: bool = False  # True if agent is running away from an enemy towards home
         self.isScared: bool = False   # True if agent is scared, False if agent is not scared
 
-        # TEMPORARY !!!!!!
-        self.timeLimit = 0.1
 
     def chooseAction(self, gameState: GameState) -> str:
         """ Returns the action to take based on the current state. """
@@ -258,16 +256,13 @@ class MasterAgent(UCTAgent):
 
         for enemy in self.enemyPositions:
             if enemy in self.territory:
-                # we want to chase if our team mate is not closer
-                if self.distances[self.teamMatePos][enemy] >= self.distances[self.ourPos][enemy]:
+                if self.ourPos in self.territory:
                     self.isChasing = True
                     self.isRunning = False
 
         # ---- Choose action ---- #
         action = UCTAgent.chooseAction(self, gameState)
         return action
-
-
 
     def getTeamMatePos(self, gameState: GameState) -> tuple[int, int]:
         """ Returns the position of the agent's team mate. """
@@ -292,24 +287,22 @@ class MasterAgent(UCTAgent):
         
         finalValue = self.valueOfNodeUCT(node)
 
-        # get pos
         if self.isInHomeStrip:
-            finalValue += 10 / closestDistToSafeStrip
+            finalValue += 20 / closestDistToSafeStrip
             return finalValue
 
         if self.isChasing:
-            finalValue += 10 / min(self.distToEnemies(node.p.s))
+            finalValue += 5 / min(self.distToEnemies(node.p.s))
             return finalValue
         
         # incentivize eat food
         if node.s.getAgentPosition(self.index) in self.foodPositions:
-            finalValue += 5
+            finalValue += 10
         # incentivize to move to food
         else:
-            finalValue += 1 / closestDistToFood
+            finalValue += 2 / closestDistToFood
 
         if self.isRunning:
-            finalValue += min(self.distToEnemies(node.p.s))
+            finalValue += 10 * min(self.distToEnemies(node.p.s))
         
-
         return finalValue
