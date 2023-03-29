@@ -14,6 +14,9 @@
 
 import random, time, util
 from datetime import datetime
+# multiprocessing
+from multiprocessing import Pool
+import copy
 
 import numpy as np
 import math
@@ -71,7 +74,7 @@ class UCTAgent(CaptureAgent):
         CaptureAgent.registerInitialState(self, gameState)
         self.timeLimit = 0.9     # amount of time the agent has to come up with an action
         self.c = math.sqrt(2)    # exploration constant
-        self.rolloutDepth = 100  # maximum depth of a rollout
+        self.rolloutDepth = 50  # maximum depth of a rollout
 
     def chooseAction(self, gameState: GameState) -> str:
         # THIS VARIABLE WILL CONTAIN ALL THE INFORMATION ABOUT THE GAME TREE
@@ -85,9 +88,13 @@ class UCTAgent(CaptureAgent):
         # This should not happen, but it prevents this method from raising a NameError.
         bAct = 'Stop'
         
+        i = 0
+
         # Start looking boy...
         while time.perf_counter() - startTime < self.timeLimit:
             
+            i += 1
+
             # SIGNIFIES THE CURRENT NODE WE ARE WORKING WITH IN THE GAME TREE
             # ALWAYS START WITH THE ROOT NODE, AND OVERWRITE WITH BEST LEAF NODE
             node = root
@@ -107,24 +114,21 @@ class UCTAgent(CaptureAgent):
 
             # Okay, now we have a leaf node, we can finally move on with the cool stuff.
 
-            if node.n == 0:
-                # ---------------- #
-                # simulation phase #
-                # ---------------- #
-                rolloutVal = self.rollout(node.s)
-            else:
-                # --------------- #
-                # expansion phase #
-                # --------------- #
-                legalActions = node.s.getLegalActions(self.index)
-                legalActions.remove('Stop')
-                for action in legalActions:
-                    newState = node.s.generateSuccessor(self.index, action)
-                    child = Node(newState, node, action)
-                    node.c.append(child)
-                # while we're at it, we do a simulation from one of the children
-                node = random.choice(node.c)
-                rolloutVal = self.rollout(node.s)
+            # --------------- #
+            # expansion phase #
+            # --------------- #
+            legalActions = node.s.getLegalActions(self.index)
+            legalActions.remove('Stop')
+            for action in legalActions:
+                newState = node.s.generateSuccessor(self.index, action)
+                child = Node(newState, node, action)
+                node.c.append(child)
+            
+            # ---------------- #
+            # simulation phase #
+            # ---------------- #
+            node = random.choice(node.c)
+            rolloutVal = self.rollout(node.s)
 
             # -------------- #
             # backprop phase #
@@ -137,10 +141,14 @@ class UCTAgent(CaptureAgent):
         # choose the best action
         bAct, bVal = None, -math.inf
         for child in root.c:
-            val = child.v / child.n
+            h = self.heuristicValue(child.s)
+            print(f'> {child.a} - UCT:{child.v / child.n:.3f} .... H: {h:.3f}')
+            val = child.v / child.n + h
+            # val = child.v / child.n
             if val > bVal:
                 bAct, bVal = child.a, val
-        self.log(bAct)
+        self.log(bAct, bVal, i)
+        self.distToClosestFood(gameState)
         return bAct
     
 
@@ -172,8 +180,11 @@ class UCTAgent(CaptureAgent):
         foodLeft = self.getFood(gameState).count(True)
         return oppFoodLeft - foodLeft
 
-    def log(self, action: str) -> None:
-        """ Print the action along with a bunch of useful logging information to the console. """
+    def log(self, action: str, value: float, i: int) -> None:
+        """
+        Prints the action and associated value
+        along with a bunch of useful logging information to the console.
+        """
         pIdx, pPos = self.index, self.getCurrentObservation().getAgentPosition(self.index)
         nextPos = {
             'North': (pPos[0], pPos[1] + 1),
@@ -182,4 +193,15 @@ class UCTAgent(CaptureAgent):
             'West': (pPos[0] - 1, pPos[1])
         }[action]
         currentScore = self.evaluate(self.getCurrentObservation())
-        print(f'Agent {pIdx} {pPos} -> {action} -> {nextPos}  |  score: {currentScore}')
+        print(f'Agent {pIdx} {pPos} -> {action}({value:.3f}) -> {nextPos}  |  score: {currentScore}  | iterations: {i}\n')
+
+    def distToClosestFood(self, gameState: GameState) -> int:
+        """ Returns the distance to the closest food pellet. """
+        foodPositions = self.getFood(gameState).asList()
+        # for the (max) 5 closest food pellets (manhattan distance), calculate maze distance and return the minimum
+        distances = [self.getMazeDistance(gameState.getAgentPosition(self.index), food) for food in foodPositions]
+        return min(distances)
+
+    def heuristicValue(self, gameState: GameState) -> float:
+        """ Returns the heuristic value of the given game state. """
+        return 1 / self.distToClosestFood(gameState)
