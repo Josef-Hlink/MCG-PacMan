@@ -254,12 +254,14 @@ class MasterAgent(UCTAgent):
         closestSafePos = min(self.safeStrip, key=lambda pos: self.distances[self.ourPos][pos])
         if self.nCarrying > 0 and self.distances[self.ourPos][closestEnemyPos] < min(3, self.distances[self.ourPos][closestSafePos]):
             self.isRunning = True
+            self.chasing = False
 
         for enemy in self.enemyPositions:
             if enemy in self.territory:
                 # we want to chase if our team mate is not closer
                 if self.distances[self.teamMatePos][enemy] >= self.distances[self.ourPos][enemy]:
                     self.isChasing = True
+                    self.isRunning = False
 
         # ---- Choose action ---- #
         action = UCTAgent.chooseAction(self, gameState)
@@ -296,7 +298,7 @@ class MasterAgent(UCTAgent):
             return finalValue
 
         if self.isChasing:
-            finalValue += 10 / min(self.distToEnemies(node.s))
+            finalValue += 10 / min(self.distToEnemies(node.p.s))
             return finalValue
         
         # incentivize eat food
@@ -307,12 +309,7 @@ class MasterAgent(UCTAgent):
             finalValue += 1 / closestDistToFood
 
         if self.isRunning:
-            finalValue += min(self.distToEnemies(node.s))
-
-        # incentivize to move to safe strip
-        # if and only if
-        # - we are carrying food
-        # - the distance to the safe strip PLUS the distance to the closest food is less than (the distance to the closest enemy + 4)
+            finalValue += min(self.distToEnemies(node.p.s))
         
 
         return finalValue
