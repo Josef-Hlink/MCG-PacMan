@@ -20,3 +20,18 @@ cd src
 # run
 python3 main.py
 ```
+
+
+## Heuristics
+
+For both:
+- quickest route out of home column (to safe strip)
+
+
+When ghost (defender):
+- distances to attacking pacman(s)
+
+
+When pacman (attacker):
+- distances (Maze) to closest (Manhattan) five food pellets
+- safest route home (to safe strip)

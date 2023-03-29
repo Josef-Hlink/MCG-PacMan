@@ -13,11 +13,12 @@
 
 
 import random, time
+from functools import wraps
 
 import numpy as np
 import math
 from captureAgents import CaptureAgent
-from capture import GameState
+from capture import GameState, halfGrid
 from game import Directions, Actions
 
 #################
@@ -26,8 +27,8 @@ from game import Directions, Actions
 
 def createTeam(
     firstIndex, secondIndex, isRed,
-    first = 'MCTSAgent',
-    second = 'UCTAgent'
+    first = 'MasterAgent',
+    second = 'MasterAgent'
 ) -> list[CaptureAgent]:
     """
     This function should return a list of two agents that will form the
@@ -60,6 +61,22 @@ class Node:
         self.n: int = 0            # number of simulations after this node
         self.v: float = 0          # "quality" of this node
 
+
+#########
+# Timer #
+#########
+
+def timer(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        startTime = time.perf_counter()
+        result = func(*args, **kwargs)
+        endTime = time.perf_counter()
+        print(f'Runtime: {func.__name__} = {endTime - startTime:.3f}s')
+        return result
+    return wrapper
+
+
 ##########
 # Agents #
 ##########
@@ -72,9 +89,10 @@ class MCTSAgent(CaptureAgent):
     def registerInitialState(self, gameState):
         CaptureAgent.registerInitialState(self, gameState)
         self.timeLimit: float = .9
-        self.rolloutDepth: int = 50
+        self.rolloutDepth: int = 100
         self.valueOfNode: function = self.valueOfNodePure
         self.valueOfFinalNode: function = self.valueOfNodePure
+        self.distances: dict = self.getDistanceHashTable(gameState)
 
     def chooseAction(self, gameState: GameState) -> str:
         
@@ -88,10 +106,10 @@ class MCTSAgent(CaptureAgent):
 
             # SELECTION
             while node.c:
-                bNode, bVal = None, math.inf
+                bNode, bVal = None, -math.inf
                 for child in node.c:
                     val = self.valueOfNode(child)
-                    if val < bVal:
+                    if val > bVal:
                         bNode, bVal = child, val
     
                 node = bNode
@@ -111,10 +129,10 @@ class MCTSAgent(CaptureAgent):
                 node.v += val
                 node = node.p
 
-        bAct, bVal = Directions.STOP, math.inf
+        bAct, bVal = random.choice(root.c).a, -math.inf
         for child in root.c:
             val = self.valueOfFinalNode(child)
-            if val < bVal:
+            if val > bVal:
                 bAct, bVal = child.a, val
 
         if self.index == 0: print(f'\nt = {int(300 - gameState.data.timeleft/4)}')
@@ -152,6 +170,33 @@ class MCTSAgent(CaptureAgent):
         nextPos = (int(currentPos[0] + dX), int(currentPos[1] + dY))
         print(f'{self.__class__.__name__}({self.index}): {currentPos} -> {action} -> {nextPos}')
 
+    def getDistanceHashTable(self, gameState: GameState) -> dict[tuple[int, int], dict[tuple[int, int], int]]:
+        """ Returns a hash table of distances between all possible combinations of state positions. """
+        walls = gameState.data.layout.walls
+        positions = [(x, y) for x in range(walls.width) for y in range(walls.height) if not walls[x][y]]
+        return {pos1: {pos2: self.getMazeDistance(pos1, pos2) for pos2 in positions} for pos1 in positions}
+
+    def getSafeStrip(self, gameState: GameState) -> list[tuple[int, int]]:
+        """ Returns a list of positions on the safe strip. """
+        homePositions = self.getHomePositions(gameState)
+        minmax = max if self.red else min
+        return [pos for pos in homePositions if pos[0] == minmax(pos[0] for pos in homePositions)]
+    
+    def getHomeStrip(self, gameState: GameState) -> list[tuple[int, int]]:
+        homePositions = self.getHomePositions(gameState)
+        minmax = min if self.red else max
+        return [pos for pos in homePositions if pos[0] == minmax(pos[0] for pos in homePositions)]
+
+    def getHomePositions(self, gameState: GameState) -> tuple[int, int]:
+        walls = gameState.data.layout.walls
+        positions = [(x, y) for x in range(walls.width) for y in range(walls.height) if not walls[x][y]]
+        redPositions = [pos for pos in positions if pos[0] < walls.width / 2]
+        bluePositions = [pos for pos in positions if pos[0] >= walls.width / 2]
+        if self.red:
+            return redPositions
+        else:
+            return bluePositions
+
 
 class UCTAgent(MCTSAgent):
     """
@@ -167,3 +212,107 @@ class UCTAgent(MCTSAgent):
     def valueOfNodeUCT(self, node: Node) -> float:
         if node.n == 0: return math.inf
         return node.v / node.n + self.c * math.sqrt(math.log(node.p.n) / node.n)
+
+class MasterAgent(UCTAgent):
+    """
+    Basically the UCT agent but with all sorts of cool heuristics.
+    """
+    def registerInitialState(self, gameState):
+        UCTAgent.registerInitialState(self, gameState)
+        self.valueOfFinalNode: function = self.valueOfNodeMaster
+        # ---- Info on environment ---- #
+        self.homePos: tuple[int, int] = gameState.getAgentPosition(self.index)
+        self.territory = self.getHomePositions(gameState)
+        self.safeStrip = self.getSafeStrip(gameState)
+        self.homeStrip = self.getHomeStrip(gameState)
+        self.teamMatePos: tuple[int, int] = self.getTeamMatePos(gameState)
+
+        # ---- Heuristic flags ---- #
+        self.isHome: bool = True      # True if agent is at home, False if agent is at enemy's side
+        self.isChasing: bool = False  # True if agent is actively chasing an enemy, False if agent is defending
+        self.isRunning: bool = False  # True if agent is running away from an enemy towards home
+        self.isScared: bool = False   # True if agent is scared, False if agent is not scared
+
+        # TEMPORARY !!!!!!
+        self.timeLimit = 0.1
+
+    def chooseAction(self, gameState: GameState) -> str:
+        """ Returns the action to take based on the current state. """
+        # ---- Update positions ---- #
+        self.ourPos = gameState.getAgentPosition(self.index)
+        self.teamMatePos = self.getTeamMatePos(gameState)
+        self.foodPositions = self.getFood(gameState).asList()
+        self.enemyPositions = [gameState.getAgentPosition(i) for i in self.getOpponents(gameState)]
+
+        # ---- Update flags ---- #
+        self.isInHomeStrip = self.ourPos in self.homeStrip
+        self.isInSafeStrip = self.ourPos in self.safeStrip
+        
+        self.nCarrying: int = gameState.getAgentState(self.index).numCarrying
+
+        closestEnemyPos = min(self.enemyPositions, key=lambda pos: self.distances[self.ourPos][pos])
+        closestSafePos = min(self.safeStrip, key=lambda pos: self.distances[self.ourPos][pos])
+        if self.nCarrying > 0 and self.distances[self.ourPos][closestEnemyPos] < min(3, self.distances[self.ourPos][closestSafePos]):
+            self.isRunning = True
+
+        for enemy in self.enemyPositions:
+            if enemy in self.territory:
+                # we want to chase if our team mate is not closer
+                if self.distances[self.teamMatePos][enemy] >= self.distances[self.ourPos][enemy]:
+                    self.isChasing = True
+
+        # ---- Choose action ---- #
+        action = UCTAgent.chooseAction(self, gameState)
+        return action
+
+
+
+    def getTeamMatePos(self, gameState: GameState) -> tuple[int, int]:
+        """ Returns the position of the agent's team mate. """
+        teamMateIndex = self.getTeam(gameState)[1 - self.index % 2]
+        return gameState.getAgentPosition(teamMateIndex)
+
+    def closestDistToSafeStrip(self, gameState: GameState) -> int:
+        """ Returns the distance to the closest safe strip position. """
+        return min(self.distances[gameState.getAgentPosition(self.index)][pos] for pos in self.safeStrip)
+
+    def closestDistToFood(self, gameState: GameState) -> int:
+        """ Returns the distance to the closest food pellet. """
+        return min(self.distances[gameState.getAgentPosition(self.index)][pos] for pos in self.foodPositions)
+
+    def distToEnemies(self, gameState: GameState) -> list[tuple[int, int]]:
+        """ Returns the distance to the enemies. """
+        return [self.distances[gameState.getAgentPosition(self.index)][gameState.getAgentPosition(i)] for i in self.getOpponents(gameState)]
+
+    def valueOfNodeMaster(self, node: Node) -> float:
+        closestDistToSafeStrip = self.closestDistToSafeStrip(node.s)
+        closestDistToFood = self.closestDistToFood(node.s)
+        
+        finalValue = self.valueOfNodeUCT(node)
+
+        # get pos
+        if self.isInHomeStrip:
+            finalValue += 10 / closestDistToSafeStrip
+            return finalValue
+
+        if self.isChasing:
+            finalValue += 10 / min(self.distToEnemies(node.s))
+            return finalValue
+        
+        # incentivize eat food
+        if node.s.getAgentPosition(self.index) in self.foodPositions:
+            finalValue += 5
+        # incentivize to move to food
+        else:
+            finalValue += 1 / closestDistToFood
+
+        if self.isRunning:
+            finalValue += min(self.distToEnemies(node.s))
+
+        # incentivize to move to safe strip
+        # if and only if
+        # - we are carrying food
+        # - the distance to the safe strip PLUS the distance to the closest food is less than (the distance to the closest enemy + 4)
+        
+
+        return finalValue
