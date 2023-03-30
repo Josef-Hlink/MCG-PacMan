@@ -220,7 +220,7 @@ class MasterAgent(UCTAgent):
     def registerInitialState(self, gameState):
         UCTAgent.registerInitialState(self, gameState)
         self.valueOfFinalNode: function = self.valueOfNodeMaster
-        self.timeLimit = .9
+        self.timeLimit = .5
         # ---- Info on environment ---- #
         self.homePos: tuple[int, int] = gameState.getAgentPosition(self.index)
         self.territory = self.getHomePositions(gameState)
@@ -264,7 +264,7 @@ class MasterAgent(UCTAgent):
             for enemy in self.enemyPositions:
                 if enemy in self.territory:
                     # if we are closer to the enemy than our teammate is, we should chase
-                    if self.distances[self.ourPos][enemy] <= self.distances[self.teamMatePos][enemy] and min(self.getTeam(gameState)) == self.index:
+                    if self.distances[self.ourPos][enemy] <= self.distances[self.teamMatePos][enemy] + 3:
                         self.isChasing = True
                         self.isRunning = False
 
@@ -285,12 +285,12 @@ class MasterAgent(UCTAgent):
 
         if self.isChasing:
             # minimize the distance to attacking pacman
-            finalValue += 10 / min(self.distToEnemies(node.p.s))
+            finalValue += 50 / min(self.distToEnemies(node.p.s))
             return finalValue
         
         if self.isRunning:
             # maximize the distance to defending ghost
-            finalValue += 10 * min(self.distToEnemies(node.p.s))
+            finalValue += 20 * min(self.distToEnemies(node.p.s))
             # while also minimizing the distance to the safe zone so it deposits food
             finalValue += 5 / (closestDistToSafeStrip + 0.001)
             return finalValue
