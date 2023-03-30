@@ -14,11 +14,11 @@
 
 import random, time
 from functools import wraps
+from typing import Literal
 
-import numpy as np
 import math
 from captureAgents import CaptureAgent
-from capture import GameState, halfGrid
+from capture import GameState
 from game import Directions, Actions
 
 #################
@@ -86,34 +86,57 @@ class MCTSAgent(CaptureAgent):
     Most basic form of an Monte Carlo Tree Search agent.
     Uses average value (total value / no. visits) for tree traversal in selection phase.
     """
-    def registerInitialState(self, gameState):
+    def registerInitialState(self, gameState: GameState) -> None:
         CaptureAgent.registerInitialState(self, gameState)
+
+        # number of agents in the game
+        self.nAgents: int = gameState.getNumAgents()
+        # time limit for the MCTS part of the algorithm (per turn)
         self.timeLimit: float = .9
-        self.rolloutDepth: int = 100
-        self.valueOfNode: function = self.valueOfNodePure
-        self.valueOfFinalNode: function = self.valueOfNodePure
-        self.distances: dict = self.getDistanceHashTable(gameState)
+        # maximum depth of the rollout phase
+        self.rolloutDepth: int = 200
+        # for each iteration in the rollout phase, the agents will move in this order
+        self.moveOrder: list[int] = [i for i in range(self.index, self.nAgents)] + [i for i in range(self.index)]
+        # list of opponent indices
+        self.opponents: list[int] = self.getOpponents(gameState)
+        # maze distances between all pairs of positions
+        self.distances: dict[tuple, dict[tuple, int]] = self.getDistanceHashTable(gameState)
+        # position of the agent's home
+        self.homePos: tuple[int, int] = gameState.getAgentPosition(self.index)
+        # list of positions in the agent's home
+        self.territory = self.getTerritory(gameState)
+        # list of positions just outside of opponent's territory
+        self.safeStrip = self.getSafeStrip(gameState)
+        # mode of the agent (not used in MCTS & UCT)
+        global FORAGE, CHASE, RUN
+        FORAGE, CHASE, RUN = 'f', 'c', 'r'
+        self.mode: Literal['f', 'c', 'r'] = None
 
     def chooseAction(self, gameState: GameState) -> str:
         
         startTime = time.perf_counter()
         root = Node(gameState)
         i = 0
+        maxDepth = 0
 
         while time.perf_counter() - startTime < self.timeLimit:
             i += 1
             node = root
 
             # SELECTION
+            depth = 0
             while node.c:
                 bNode, bVal = None, -math.inf
                 for child in node.c:
-                    val = self.valueOfNode(child)
+                    val = self.selectionValue(child)
                     if val > bVal:
                         bNode, bVal = child, val
-    
+
+                depth += 1
                 node = bNode
             
+            maxDepth = max(maxDepth, depth)
+
             # EXPANSION
             for action in self.legalActions(node.s):
                 child = Node(node.s.generateSuccessor(self.index, action), node, action)
@@ -121,7 +144,7 @@ class MCTSAgent(CaptureAgent):
 
             # SIMULATION
             node = random.choice(node.c)
-            val = self.rollout(node.s)
+            val = self.rollout(node)
 
             # BACKPROP
             while node:
@@ -130,73 +153,102 @@ class MCTSAgent(CaptureAgent):
                 node = node.p
 
         bAct, bVal = random.choice(root.c).a, -math.inf
+        if self.index == 0: print('\n' + '-' * 80 + '\n' + ' ' * 35 + f't = {int(300 - gameState.data.timeleft/4)}' + '\n' + '-' * 80)
+        else: print()
+        if self.mode is not None: print(f'mode: \033[1m{self.mode.capitalize()}\033[0m')
         for child in root.c:
-            val = self.valueOfFinalNode(child)
+            val = self.finalValue(child)
+            print(f'> {child.a:<5} | {val:.4f}')
             if val > bVal:
                 bAct, bVal = child.a, val
 
-        if self.index == 0: print(f'\nt = {int(300 - gameState.data.timeleft/4)}')
         self.logAction(bAct)
         endTime = time.perf_counter()
-        print(f'i = {i}, runtime = {endTime - startTime:.3f}s, value = {bVal:.3f}')
+        print(f'{i} iterations (max depth {maxDepth}) took {endTime - startTime:.3f}s with best value {bVal:.4f}')
 
         return bAct
 
-    def rollout(self, gameState: GameState) -> float:
-        state, depth = gameState, 0
-        while not state.isOver() and depth < self.rolloutDepth:
-            state = state.generateSuccessor(self.index, random.choice(self.legalActions(state)))
-            depth += 1
-        return self.evaluate(state)
-    
-    def evaluate(self, gameState: GameState) -> float:
-        oppFoodLeft = self.getFoodYouAreDefending(gameState).count(True)
-        foodLeft = self.getFood(gameState).count(True)
-        return oppFoodLeft - foodLeft
- 
-    def legalActions(self, gameState: GameState) -> list[str]:
-        legalActions = gameState.getLegalActions(self.index)
-        legalActions.remove(Directions.STOP)
-        return legalActions
+    def rollout(self, node: Node) -> float:
+        """ Will be overwritten by Master Agent. """
+        return self._randomRollout(node)
 
-    def valueOfNodePure(self, node: Node) -> float:
-        if node.n == 0: return math.inf
-        return node.v / node.n
+    def selectionValue(self, node: Node) -> float:
+        """ Will be overwritten by both UCT Agent and Master Agent. """
+        return self._pureValue(node)
 
-    def logAction(self, action: str) -> None:
-        """ Prints the action taken by the agent. """
-        currentPos = self.getCurrentObservation().getAgentPosition(self.index)
-        dX, dY = Actions.directionToVector(action)
-        nextPos = (int(currentPos[0] + dX), int(currentPos[1] + dY))
-        print(f'{self.__class__.__name__}({self.index}): {currentPos} -> {action} -> {nextPos}')
+    def finalValue(self, node: Node) -> float:
+        """ Will be overwritten by Master Agent. """
+        return self._pureValue(node)
+
+    # methods to be called on initialization
 
     def getDistanceHashTable(self, gameState: GameState) -> dict[tuple[int, int], dict[tuple[int, int], int]]:
-        """ Returns a hash table of distances between all possible combinations of state positions. """
+        """ Returns a hash table of distances between all possible combinations of positions. """
         walls = gameState.data.layout.walls
         positions = [(x, y) for x in range(walls.width) for y in range(walls.height) if not walls[x][y]]
         return {pos1: {pos2: self.getMazeDistance(pos1, pos2) for pos2 in positions} for pos1 in positions}
 
     def getSafeStrip(self, gameState: GameState) -> list[tuple[int, int]]:
-        """ Returns a list of positions on the safe strip. """
-        homePositions = self.getHomePositions(gameState)
-        minmax = max if self.red else min
-        return [pos for pos in homePositions if pos[0] == minmax(pos[0] for pos in homePositions)]
-    
-    def getHomeStrip(self, gameState: GameState) -> list[tuple[int, int]]:
-        homePositions = self.getHomePositions(gameState)
-        minmax = min if self.red else max
-        return [pos for pos in homePositions if pos[0] == minmax(pos[0] for pos in homePositions)]
+        """
+        Returns a list of positions on the safe strip.
+        The safe strip is the strip (column) of positions that are closest to the opponent's side.
+        """
+        territory = self.getTerritory(gameState)
+        edgeCol = max(territory, key=lambda pos: pos[0])[0] if self.red else min(territory, key=lambda pos: pos[0])[0]
+        return [pos for pos in territory if pos[0] == edgeCol]
 
-    def getHomePositions(self, gameState: GameState) -> tuple[int, int]:
+    def getTerritory(self, gameState: GameState) -> tuple[int, int]:
+        """ Returns all of the positions that are inside the agent's territory. """
         walls = gameState.data.layout.walls
         positions = [(x, y) for x in range(walls.width) for y in range(walls.height) if not walls[x][y]]
         redPositions = [pos for pos in positions if pos[0] < walls.width / 2]
         bluePositions = [pos for pos in positions if pos[0] >= walls.width / 2]
-        if self.red:
-            return redPositions
-        else:
-            return bluePositions
+        return redPositions if self.red else bluePositions
 
+    # methods to be called multiple times
+
+    def legalActions(self, gameState: GameState) -> list[str]:
+        """ Returns a list of legal actions for the agent (without STOP). """
+        legalActions = gameState.getLegalActions(self.index)
+        legalActions.remove(Directions.STOP)
+        return legalActions
+
+    def getTeamMatePos(self, gameState: GameState) -> tuple[int, int]:
+        """ Returns the position of the agent's team mate. """
+        return gameState.getAgentPosition(self.getTeam(gameState)[1 - self.index % 2])
+
+    def closestDistToSafeStrip(self, gameState: GameState) -> int:
+        """ Returns the distance to the closest safe strip position. """
+        return min(self.distances[gameState.getAgentPosition(self.index)][pos] for pos in self.safeStrip)
+
+    def evaluateRollout(self, gameState: GameState) -> float:
+        """ Checks how much food is left for the agent and the opponent. """
+        oppFoodLeft = self.getFoodYouAreDefending(gameState).count(True)
+        foodLeft = self.getFood(gameState).count(True)
+        return oppFoodLeft - foodLeft
+ 
+    def _pureValue(self, node: Node) -> float:
+        """ Average observed value of a node. """
+        if node.n == 0: return math.inf
+        return node.v / node.n
+
+    def _randomRollout(self, fromNode: Node) -> float:
+        """ Randomly plays out the game from the given node until the game is over or the rollout depth is reached. """
+        state, depth = fromNode.s, 0
+        while not state.isOver() and depth < self.rolloutDepth:
+            for i in self.moveOrder:
+                actions = state.getLegalActions(i)
+                actions.remove(Directions.STOP)
+                state = state.generateSuccessor(i, random.choice(actions))
+            depth += 1
+        return self.evaluateRollout(state)
+
+    def logAction(self, action: str) -> None:
+        """ Prints the action taken by the agent in a nice way. """
+        currentPos = self.getCurrentObservation().getAgentPosition(self.index)
+        dX, dY = Actions.directionToVector(action)
+        nextPos = (int(currentPos[0] + dX), int(currentPos[1] + dY))
+        print(f'{self.__class__.__name__}({self.index}): {currentPos} -> {action} -> {nextPos}')
 
 class UCTAgent(MCTSAgent):
     """
@@ -204,119 +256,117 @@ class UCTAgent(MCTSAgent):
     but uses UCB1 formula for tree traversal in selection phase.
     """
     def registerInitialState(self, gameState):
-        MCTSAgent.registerInitialState(self, gameState)
-        self.valueOfNode: function = self.valueOfNodeUCT
-        self.valueOfFinalNode: function = self.valueOfNodePure
-        self.c: float = math.sqrt(2)
+        super().registerInitialState(gameState)
 
-    def valueOfNodeUCT(self, node: Node) -> float:
+    def selectionValue(self, node: Node) -> float:
+        """ UCB1 formula for tree traversal. """
+        return self._UCB1Value(node)
+
+    def _UCB1Value(self, node: Node) -> float:
+        """ UCB1 formula for tree traversal. """
         if node.n == 0: return math.inf
-        return node.v / node.n + self.c * math.sqrt(math.log(node.p.n) / node.n)
+        return node.v / node.n + math.sqrt(2 * math.log(node.p.n) / node.n)
 
 class MasterAgent(UCTAgent):
     """
     Basically the UCT agent but with all sorts of cool heuristics.
     """
     def registerInitialState(self, gameState):
-        UCTAgent.registerInitialState(self, gameState)
-        self.valueOfFinalNode: function = self.valueOfNodeMaster
-        self.timeLimit = .5
-        # ---- Info on environment ---- #
-        self.homePos: tuple[int, int] = gameState.getAgentPosition(self.index)
-        self.territory = self.getHomePositions(gameState)
-        self.safeStrip = self.getSafeStrip(gameState)
-        self.homeStrip = self.getHomeStrip(gameState)
-        self.teamMatePos: tuple[int, int] = self.getTeamMatePos(gameState)
-
-        # ---- Heuristic flags ---- #
-        self.isHome: bool = True      # True if agent is at home, False if agent is at enemy's side
-        self.isChasing: bool = False  # True if agent is actively chasing an enemy, False if agent is defending
-        self.isRunning: bool = False  # True if agent is running away from an enemy towards home
-        self.isScared: bool = False   # True if agent is scared, False if agent is not scared
-
+        super().registerInitialState(gameState)
+        self.rolloutDepth = 100
+        self.timeLimit = 0.9
 
     def chooseAction(self, gameState: GameState) -> str:
-        """ Returns the action to take based on the current state. """
-        # ---- Update positions ---- #
-        self.ourPos = gameState.getAgentPosition(self.index)
-        self.teamMatePos = self.getTeamMatePos(gameState)
-        self.foodPositions = self.getFood(gameState).asList()
-        self.enemyPositions = [gameState.getAgentPosition(i) for i in self.getOpponents(gameState)]
 
-        # ---- Update flags ---- #
-        self.isRunning, self.isChasing = False, False
-        self.isInHomeStrip = self.ourPos in self.homeStrip
-        self.isInSafeStrip = self.ourPos in self.safeStrip
+        # when evaluating children in _finalHeuristicValue,
+        # we want to know some things about the current game state (their parent)
+        # these variables will be prefixed with "p" to indicate that they refer to the parent's state
+        # this "p" might also be confused with "previous", and that is actually fine semantically too
         
-        self.nCarrying: int = gameState.getAgentState(self.index).numCarrying
+        # states
+        self.pGameState = gameState; del gameState
+        self.pAgentState = self.pGameState.getAgentState(self.index)
+        self.pIsPacman = self.pAgentState.isPacman
+        # our positions
+        self.pPos = self.pGameState.getAgentPosition(self.index)
+        self.pTeamMatePos = self.getTeamMatePos(self.pGameState)
+        # food
+        self.pFoodPositions = sorted(self.getFood(self.pGameState).asList(), key=lambda pos: self.distances[self.pPos][pos])
+        self.pNumCarrying = self.pAgentState.numCarrying
+        self.pNumReturned = self.pAgentState.numReturned
+        # enemies
+        pEnemyPositions = [self.pGameState.getAgentPosition(eIndex) for eIndex in self.getOpponents(self.pGameState)]
+        self.pEnemyDistances = sorted([self.distances[self.pPos][pos] for pos in pEnemyPositions])
+        self.pEnemyPositions = sorted(pEnemyPositions, key=lambda pos: self.distances[self.pPos][pos])
+        self.pEnemyInTerritory = any(pos in self.territory for pos in self.pEnemyPositions)
+        self.pEnemiesScared = self.pGameState.getAgentState(self.getOpponents(self.pGameState)[0]).scaredTimer > 0
 
-        closestEnemyPos = min(self.enemyPositions, key=lambda pos: self.distances[self.ourPos][pos])
-        closestSafePos = min(self.safeStrip, key=lambda pos: self.distances[self.ourPos][pos])
+        self.setMode()
 
-        if self.nCarrying > 2:
-            self.isRunning = True
-            self.chasing = False
-        elif self.nCarrying > 0 and self.distances[self.ourPos][closestEnemyPos] < min(3, self.distances[self.ourPos][closestSafePos]):
-        # elif self.distances[self.ourPos][closestEnemyPos] < min(5, self.distances[self.ourPos][closestSafePos]):
-            self.isRunning = True
-            self.chasing = False
+        return super().chooseAction(self.pGameState)
+
+    def setMode(self) -> None:
+        """ Sets the mode of the agent. """
+        # if there is an enemy in our territory and we are closer to them than our teammate is,
+        # we want to chase them down
+        if (
+            (self.pEnemyInTerritory and
+            self.distances[self.pPos][self.pEnemyPositions[0]] <=
+            self.distances[self.pTeamMatePos][self.pEnemyPositions[0]] + 2) or
+            (self.pIsPacman and self.pEnemiesScared)
+        ):
+            self.mode = CHASE
+        # if we are carrying a lot of food or the enemy is close (while we are in their territory),
+        # we want to run away from them to the safe strip
+        elif (
+            self.pNumCarrying >= 3 or
+            (self.pIsPacman and self.pEnemyDistances[0] <= 4)
+        ):
+            self.mode = RUN
+        # in all other situations, just look for food
         else:
-            for enemy in self.enemyPositions:
-                if enemy in self.territory:
-                    # if we are closer to the enemy than our teammate is, we should chase
-                    if self.distances[self.ourPos][enemy] <= self.distances[self.teamMatePos][enemy] + 3:
-                        self.isChasing = True
-                        self.isRunning = False
+            self.mode = FORAGE
 
-        # ---- Choose action ---- #
-        action = UCTAgent.chooseAction(self, gameState)
-        return action
+    def _finalHeuristicValue(self, node: Node) -> float:
+        cGameState = node.s
+        cPos = cGameState.getAgentPosition(self.index)
+        cAgentState = cGameState.getAgentState(self.index)
+        cNumCarrying = cAgentState.numCarrying
 
-    def valueOfNodeMaster(self, node: Node) -> float:
-        closestDistToSafeStrip = self.closestDistToSafeStrip(node.s)
-        closestDistToFood = self.closestDistToFood(node.s)
-        
-        finalValue = self.valueOfNodeUCT(node)
-
-        if self.isInHomeStrip:
-            # just always minimize distance to middle of the field
-            finalValue += 100 / closestDistToSafeStrip
-            return finalValue
-
-        if self.isChasing:
-            # minimize the distance to attacking pacman
-            finalValue += 50 / min(self.distToEnemies(node.p.s))
-            return finalValue
-        
-        if self.isRunning:
-            # maximize the distance to defending ghost
-            finalValue += 20 * min(self.distToEnemies(node.p.s))
-            # while also minimizing the distance to the safe zone so it deposits food
-            finalValue += 5 / (closestDistToSafeStrip + 0.001)
-            return finalValue
-        
-        # incentivize eating food
-        if node.s.getAgentPosition(self.index) in self.foodPositions:
-            finalValue += 2
-        # incentivize to move closer to food
+        val = 0
+        # if we are in foraging mode
+        if self.mode == FORAGE:
+            # we want to maximize the number of food pellets we have
+            val += (cNumCarrying - self.pNumCarrying) * 2
+            # we also want to minimize the distance to the closest food pellet
+            val -= self.distances[cPos][self.pFoodPositions[0]] * 1
+        # if we are in running mode
+        elif self.mode == RUN:
+            # we want to maximize the distance to the closest enemy
+            val += self.distances[cPos][self.pEnemyPositions[0]] * 2
+            # we also want to minimize the distance to the closest safe strip position
+            val -= self.closestDistToSafeStrip(cGameState) * .5
+        # if we are in chasing mode
+        elif self.mode == CHASE:
+            # we want to minimize the distance to the closest enemy
+            val -= self.distances[cPos][self.pEnemyPositions[0]] * 2
+            # we also want to minimize the distance to the closest safe strip position
+            # so in case of a tie, we will choose the position that is closer to where they want to go
+            val -= self.closestDistToSafeStrip(cGameState) * .5
         else:
-            finalValue += 1 / closestDistToFood
+            raise Exception(f'Unknown mode: {self.mode}')
 
-        return finalValue
+        return val
 
-    def getTeamMatePos(self, gameState: GameState) -> tuple[int, int]:
-        """ Returns the position of the agent's team mate. """
-        teamMateIndex = self.getTeam(gameState)[1 - self.index % 2]
-        return gameState.getAgentPosition(teamMateIndex)
+    def selectionValue(self, node: Node) -> float:
+        """ UCB1 formula for tree traversal. """
+        return self._UCB1Value(node)
 
-    def closestDistToSafeStrip(self, gameState: GameState) -> int:
-        """ Returns the distance to the closest safe strip position. """
-        return min(self.distances[gameState.getAgentPosition(self.index)][pos] for pos in self.safeStrip)
+    def finalValue(self, node: Node) -> float:
+        """ Combination of pure value plus heuristic evaluation of a node. """
+        return self._pureValue(node) + self._finalHeuristicValue(node)
 
-    def closestDistToFood(self, gameState: GameState) -> int:
-        """ Returns the distance to the closest food pellet. """
-        return min(self.distances[gameState.getAgentPosition(self.index)][pos] for pos in self.foodPositions)
-
-    def distToEnemies(self, gameState: GameState) -> list[tuple[int, int]]:
-        """ Returns the distance to the enemies. """
-        return [self.distances[gameState.getAgentPosition(self.index)][gameState.getAgentPosition(i)] for i in self.getOpponents(gameState)]
+    def rollout(self, fromNode: Node) -> float:
+        """ Heuristic evaluation of a node. """
+        # TODO: implement this
+        return self._randomRollout(fromNode)
