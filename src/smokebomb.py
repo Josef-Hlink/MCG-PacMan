@@ -157,8 +157,13 @@ class MCTSAgent(CaptureAgent):
         else: print()
         if self.mode is not None: print(f'mode: \033[1m{self.mode.capitalize()}\033[0m')
         for child in root.c:
-            val = self.finalValue(child)
-            print(f'> {child.a:<5} | {val:.4f}')
+            res = self.finalValue(child)
+            if type(res) == float:
+                val = res
+                print(f'> {child.a:<5} | {val:.4f}')
+            else:
+                val = res[0] + res[1]
+                print(f'> {child.a:<5} | {val:.4f} ({res[0]:.4f} + {res[1]:.4f})')
             if val > bVal:
                 bAct, bVal = child.a, val
 
@@ -225,7 +230,7 @@ class MCTSAgent(CaptureAgent):
         """ Checks how much food is left for the agent and the opponent. """
         oppFoodLeft = self.getFoodYouAreDefending(gameState).count(True)
         foodLeft = self.getFood(gameState).count(True)
-        return oppFoodLeft - foodLeft
+        return oppFoodLeft - foodLeft + gameState.getScore() * 2
  
     def _pureValue(self, node: Node) -> float:
         """ Average observed value of a node. """
@@ -298,7 +303,8 @@ class MasterAgent(UCTAgent):
         pEnemyPositions = [self.pGameState.getAgentPosition(eIndex) for eIndex in self.getOpponents(self.pGameState)]
         self.pEnemyDistances = sorted([self.distances[self.pPos][pos] for pos in pEnemyPositions])
         self.pEnemyPositions = sorted(pEnemyPositions, key=lambda pos: self.distances[self.pPos][pos])
-        self.pEnemyInTerritory = any(pos in self.territory for pos in self.pEnemyPositions)
+        pEnemiesInTerritory = [pos for pos in self.pEnemyPositions if pos in self.territory]
+        self.pEnemiesInTerritory = sorted(pEnemiesInTerritory, key=lambda pos: self.distances[self.pPos][pos])
         self.pEnemiesScared = self.pGameState.getAgentState(self.getOpponents(self.pGameState)[0]).scaredTimer > 0
 
         self.setMode()
@@ -310,9 +316,9 @@ class MasterAgent(UCTAgent):
         # if there is an enemy in our territory and we are closer to them than our teammate is,
         # we want to chase them down
         if (
-            (self.pEnemyInTerritory and
-            self.distances[self.pPos][self.pEnemyPositions[0]] <=
-            self.distances[self.pTeamMatePos][self.pEnemyPositions[0]] + 2) or
+            (self.pEnemiesInTerritory and
+            self.distances[self.pPos][self.pEnemiesInTerritory[0]] <=
+            self.distances[self.pTeamMatePos][self.pEnemiesInTerritory[0]] + 2) or
             (self.pIsPacman and self.pEnemiesScared)
         ):
             self.mode = CHASE
@@ -349,7 +355,7 @@ class MasterAgent(UCTAgent):
         # if we are in chasing mode
         elif self.mode == CHASE:
             # we want to minimize the distance to the closest enemy
-            val -= self.distances[cPos][self.pEnemyPositions[0]] * 2
+            val -= self.distances[cPos][self.pEnemiesInTerritory[0]] * 2
             # we also want to minimize the distance to the closest safe strip position
             # so in case of a tie, we will choose the position that is closer to where they want to go
             val -= self.closestDistToSafeStrip(cGameState) * .5
@@ -362,9 +368,9 @@ class MasterAgent(UCTAgent):
         """ UCB1 formula for tree traversal. """
         return self._UCB1Value(node)
 
-    def finalValue(self, node: Node) -> float:
+    def finalValue(self, node: Node) -> float | tuple[float, float]:
         """ Combination of pure value plus heuristic evaluation of a node. """
-        return self._pureValue(node) + self._finalHeuristicValue(node)
+        return self._pureValue(node), self._finalHeuristicValue(node)
 
     def rollout(self, fromNode: Node) -> float:
         """ Heuristic evaluation of a node. """
